@@ -2,6 +2,7 @@ import os
 import logging
 import requests
 import io
+import asyncio
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -13,7 +14,7 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-# Using a high-quality, fast text-to-image model
+# Text-to-image AI model
 API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
 HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
@@ -33,20 +34,16 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     user_prompt = update.message.text
     processing_msg = await update.message.reply_text("🔄 *Designing your logo... Please wait a few seconds.*", parse_mode="Markdown")
 
-    # Enhance the user prompt slightly to ensure it looks like a clean logo asset
     enhanced_prompt = f"Professional logo design, {user_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
 
     try:
-        # Request image from Hugging Face API
         response = requests.post(API_URL, headers=HEADERS, json={"inputs": enhanced_prompt})
         
         if response.status_code == 200:
-            # Convert binary data into an image file object in memory
             image_bytes = response.content
             image_file = io.BytesIO(image_bytes)
             image_file.name = 'logo.png'
 
-            # Send the photo back to the user
             await update.message.reply_photo(photo=image_file, caption="✨ Here is your generated logo! ✨")
         else:
             logger.error(f"HF API Error: {response.status_code} - {response.text}")
@@ -57,7 +54,6 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("❌ An error occurred while generating your logo. Please try again.")
     
     finally:
-        # Delete the "processing" placeholder message
         await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=processing_msg.message_id)
 
 def main():
@@ -66,6 +62,15 @@ def main():
         logger.error("Missing environment variables! Ensure TELEGRAM_TOKEN and HF_TOKEN are set.")
         return
 
+    # FIX FOR PYTHON 3.14+: Explicitly get or create the event loop before building the application
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        # No running loop, so we create one and set it as current
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        logger.info("New event loop created and set successfully.")
+
     # Build the Application
     application = Application.builder().token(TOKEN).build()
 
@@ -73,7 +78,7 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_logo))
 
-    # Run the bot using polling
+    # Run the bot
     logger.info("Bot is starting up...")
     application.run_polling()
 

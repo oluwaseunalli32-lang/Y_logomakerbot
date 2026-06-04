@@ -3,6 +3,7 @@ import logging
 import requests
 import io
 import asyncio
+import html
 from telegram import Update
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
@@ -20,21 +21,26 @@ HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the command /start is issued."""
+    # Switched to HTML parsing to completely avoid parsing character conflicts
     welcome_text = (
-        "🎨 **Welcome to Y_logomakerbot!** 🎨\n\n"
+        "🎨 <b>Welcome to Y_logomakerbot!</b> 🎨\n\n"
         "I am your personal AI logo designer. Just type in what you want your logo to look like, "
         "and I'll generate it for you in seconds!\n\n"
-        "**Example:** `A minimalist geometric logo for a coffee shop, vector, blue and gold` \n\n"
+        "<b>Example:</b> <code>A minimalist geometric logo for a coffee shop, vector, blue and gold</code>\n\n"
         "Ready? Go ahead and send me your brand name or design prompt!"
     )
-    await update.message.reply_text(welcome_text, parse_mode="Markdown")
+    await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles user messages, sends them to Hugging Face, and returns the image."""
     user_prompt = update.message.text
-    processing_msg = await update.message.reply_text("🔄 *Designing your logo... Please wait a few seconds.*", parse_mode="Markdown")
+    
+    # Use HTML formatting safely here too
+    processing_msg = await update.message.reply_text("🔄 <i>Designing your logo... Please wait a few seconds.</i>", parse_mode="HTML")
 
-    enhanced_prompt = f"Professional logo design, {user_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
+    # Clean the user prompt to protect the AI generator context
+    safe_prompt = html.escape(user_prompt)
+    enhanced_prompt = f"Professional logo design, {safe_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
 
     try:
         response = requests.post(API_URL, headers=HEADERS, json={"inputs": enhanced_prompt})
@@ -62,11 +68,10 @@ def main():
         logger.error("Missing environment variables! Ensure TELEGRAM_TOKEN and HF_TOKEN are set.")
         return
 
-    # FIX FOR PYTHON 3.14+: Explicitly get or create the event loop before building the application
+    # Python 3.14 asyncio loop initializer
     try:
         asyncio.get_running_loop()
     except RuntimeError:
-        # No running loop, so we create one and set it as current
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
         logger.info("New event loop created and set successfully.")

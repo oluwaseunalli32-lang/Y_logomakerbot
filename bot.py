@@ -4,7 +4,9 @@ import requests
 import io
 import asyncio
 import html
+import time
 from telegram import Update
+from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Enable logging
@@ -21,7 +23,6 @@ HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the command /start is issued."""
-    # Switched to HTML parsing to completely avoid parsing character conflicts
     welcome_text = (
         "🎨 <b>Welcome to Y_logomakerbot!</b> 🎨\n\n"
         "I am your personal AI logo designer. Just type in what you want your logo to look like, "
@@ -34,11 +35,8 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles user messages, sends them to Hugging Face, and returns the image."""
     user_prompt = update.message.text
-    
-    # Use HTML formatting safely here too
     processing_msg = await update.message.reply_text("🔄 <i>Designing your logo... Please wait a few seconds.</i>", parse_mode="HTML")
 
-    # Clean the user prompt to protect the AI generator context
     safe_prompt = html.escape(user_prompt)
     enhanced_prompt = f"Professional logo design, {safe_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
 
@@ -60,10 +58,13 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
         await update.message.reply_text("❌ An error occurred while generating your logo. Please try again.")
     
     finally:
-        await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=processing_msg.message_id)
+        try:
+            await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=processing_msg.message_id)
+        except Exception:
+            pass
 
 def main():
-    """Start the bot."""
+    """Start the bot with automated conflict recovery."""
     if not TOKEN or not HF_TOKEN:
         logger.error("Missing environment variables! Ensure TELEGRAM_TOKEN and HF_TOKEN are set.")
         return
@@ -83,9 +84,20 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_logo))
 
-    # Run the bot
+    # COLLISION PROOF POLLING LOOP:
+    # If Render runs two copies of your bot during deployment, the new one will gracefully 
+    # wait for the old one to die instead of hard-crashing and staying broken.
     logger.info("Bot is starting up...")
-    application.run_polling()
+    while True:
+        try:
+            application.run_polling(close_loop=False)
+            break 
+        except Conflict:
+            logger.warning("Telegram token conflict detected! An old Render instance is still shutting down. Retrying in 10 seconds...")
+            time.sleep(10)
+        except Exception as e:
+            logger.error(f"Unexpected error: {e}")
+            time.sleep(5)
 
 if __name__ == '__main__':
     main()

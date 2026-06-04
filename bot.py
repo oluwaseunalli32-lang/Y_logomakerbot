@@ -1,5 +1,6 @@
 import os
 import logging
+import urllib3
 import io
 import asyncio
 import html
@@ -7,7 +8,6 @@ import time
 from telegram import Update
 from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
-from huggingface_hub import InferenceClient
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -17,12 +17,11 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-# Initialize the official Hugging Face Inference Client
-# This handles connection pooling and network drops much better than raw requests
-client = InferenceClient(
-    model="stabilityai/stable-diffusion-xl-base-1.0",
-    token=HF_TOKEN
-)
+# Robust PoolManager to bypass DNS level drops common on Render containers
+http = urllib3.PoolManager(retries=urllib3.Retry(connect=3, read=3, redirect=3))
+
+# Production fallback endpoint for the Stable Diffusion model
+API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the command /start is issued."""
@@ -36,7 +35,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles user messages, sends them to Hugging Face, and returns the image."""
+    """Handles user messages, sends them to AI endpoint, and returns the image."""
     user_prompt = update.message.text
     processing_msg = await update.message.reply_text("🔄 <i>Designing your logo... Please wait a few seconds.</i>", parse_mode="HTML")
 
@@ -44,24 +43,36 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     enhanced_prompt = f"Professional logo design, {safe_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
 
     try:
-        # Run the network-bound image generation in a background thread to prevent blocking the async loop
-        def call_hf():
-            return client.text_to_image(enhanced_prompt)
+        # Use a synchronous block wrapping urllib3 inside an execution thread
+        def fetch_image():
+            headers = {
+                "Authorization": f"Bearer {HF_TOKEN}",
+                "Content-Type": "application/json"
+            }
+            # Explicitly post JSON payload using pool management
+            response = http.request(
+                "POST", 
+                API_URL, 
+                headers=headers, 
+                json={"inputs": enhanced_prompt},
+                timeout=30.0
+            )
+            return response
 
-        # Execute the generation safely
-        image = await asyncio.to_thread(call_hf)
+        # Execute network call safely away from the primary async loop
+        res = await asyncio.to_thread(fetch_image)
         
-        # Convert PIL Image directly to bytes for Telegram upload
-        image_file = io.BytesIO()
-        image.save(image_file, format='PNG')
-        image_file.seek(0)
-        image_file.name = 'logo.png'
-
-        await update.message.reply_photo(photo=image_file, caption="✨ Here is your generated logo! ✨")
+        if res.status == 200:
+            image_file = io.BytesIO(res.data)
+            image_file.name = 'logo.png'
+            await update.message.reply_photo(photo=image_file, caption="✨ Here is your generated logo! ✨")
+        else:
+            logger.error(f"API Connection responded with status: {res.status}")
+            await update.message.reply_text("⚠️ The AI engine is waking up. Please send your prompt one more time!")
 
     except Exception as e:
-        logger.error(f"Error occurred during generation: {str(e)}")
-        await update.message.reply_text("❌ An error occurred while generating your logo. Please try again.")
+        logger.error(f"Network error caught: {str(e)}")
+        await update.message.reply_text("❌ Connection timeout. Let's try that prompt again.")
     
     finally:
         try:
@@ -70,23 +81,18 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             pass
 
 def main():
-    """Start the bot with automated conflict recovery."""
+    """Start the bot."""
     if not TOKEN or not HF_TOKEN:
         logger.error("Missing environment variables! Ensure TELEGRAM_TOKEN and HF_TOKEN are set.")
         return
 
-    # Python 3.14 asyncio loop initializer
     try:
         asyncio.get_running_loop()
     except RuntimeError:
         loop = asyncio.new_event_loop()
         asyncio.set_event_loop(loop)
-        logger.info("New event loop created and set successfully.")
 
-    # Build the Application
     application = Application.builder().token(TOKEN).build()
-
-    # Register handlers
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_logo))
 
@@ -96,10 +102,10 @@ def main():
             application.run_polling(close_loop=False)
             break 
         except Conflict:
-            logger.warning("Telegram token conflict detected! An old Render instance is still shutting down. Retrying in 10 seconds...")
+            logger.warning("Token conflict detected. Waiting out old worker deployment instance...")
             time.sleep(10)
         except Exception as e:
-            logger.error(f"Unexpected error: {e}")
+            logger.error(f"Unexpected loop drop: {e}")
             time.sleep(5)
 
 if __name__ == '__main__':

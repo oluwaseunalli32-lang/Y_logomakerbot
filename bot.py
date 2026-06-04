@@ -14,7 +14,7 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL") # Provided automatically by Render
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
 
 # Global PoolManager for handling connections cleanly
 http = urllib3.PoolManager(retries=urllib3.Retry(connect=3, read=3, redirect=3))
@@ -79,6 +79,13 @@ def main():
         logger.error("Missing TELEGRAM_TOKEN environment variable!")
         return
 
+    # Fix for RuntimeError: There is no current event loop in thread 'MainThread'
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_logo))
@@ -91,11 +98,10 @@ def main():
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
-            secret_token="A_Secure_Secret_Token_123!", # Secures your endpoint
+            secret_token="A_Secure_Secret_Token_123!", 
             webhook_url=f"{RENDER_EXTERNAL_URL}/webhook"
         )
     else:
-        # Fallback local testing if not running on Render infrastructure
         logger.info("No Render environment found. Falling back to local polling...")
         application.run_polling()
 

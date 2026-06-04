@@ -15,13 +15,9 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 TOKEN = os.getenv("TELEGRAM_TOKEN")
-HF_TOKEN = os.getenv("HF_TOKEN")
 
-# Robust PoolManager to bypass DNS level drops common on Render containers
+# Global PoolManager for handling outbound connections cleanly
 http = urllib3.PoolManager(retries=urllib3.Retry(connect=3, read=3, redirect=3))
-
-# Production fallback endpoint for the Stable Diffusion model
-API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the command /start is issued."""
@@ -35,31 +31,28 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles user messages, sends them to AI endpoint, and returns the image."""
+    """Handles user messages, pulls the image from an ultra-stable mirror route, and sends it back."""
     user_prompt = update.message.text
     processing_msg = await update.message.reply_text("🔄 <i>Designing your logo... Please wait a few seconds.</i>", parse_mode="HTML")
 
+    # Clean the input and craft a prompt optimized for logo assets
     safe_prompt = html.escape(user_prompt)
-    enhanced_prompt = f"Professional logo design, {safe_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
+    clean_prompt = f"Professional logo design, {safe_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
+    
+    # URL encode the prompt so spaces and special characters don't break the web address
+    encoded_prompt = urllib3.util.parse_url(clean_prompt).url
+    
+    # We use a globally recognized endpoint that avoids Hugging Face's DNS sub-domain blocks
+    # This calls a blazing-fast Stable Diffusion engine completely free without token requirements
+    api_url = f"https://image.pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&nologo=true"
 
     try:
-        # Use a synchronous block wrapping urllib3 inside an execution thread
         def fetch_image():
-            headers = {
-                "Authorization": f"Bearer {HF_TOKEN}",
-                "Content-Type": "application/json"
-            }
-            # Explicitly post JSON payload using pool management
-            response = http.request(
-                "POST", 
-                API_URL, 
-                headers=headers, 
-                json={"inputs": enhanced_prompt},
-                timeout=30.0
-            )
+            # Standard GET request to fetch the image binary stream
+            response = http.request("GET", api_url, timeout=45.0)
             return response
 
-        # Execute network call safely away from the primary async loop
+        # Run the image download in a background thread
         res = await asyncio.to_thread(fetch_image)
         
         if res.status == 200:
@@ -67,12 +60,12 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             image_file.name = 'logo.png'
             await update.message.reply_photo(photo=image_file, caption="✨ Here is your generated logo! ✨")
         else:
-            logger.error(f"API Connection responded with status: {res.status}")
-            await update.message.reply_text("⚠️ The AI engine is waking up. Please send your prompt one more time!")
+            logger.error(f"Image generation failed with status code: {res.status}")
+            await update.message.reply_text("⚠️ The generation pipeline is busy. Please try sending your prompt again!")
 
     except Exception as e:
         logger.error(f"Network error caught: {str(e)}")
-        await update.message.reply_text("❌ Connection timeout. Let's try that prompt again.")
+        await update.message.reply_text("❌ Connection timeout. Let's try that prompt one more time.")
     
     finally:
         try:
@@ -81,9 +74,9 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             pass
 
 def main():
-    """Start the bot."""
-    if not TOKEN or not HF_TOKEN:
-        logger.error("Missing environment variables! Ensure TELEGRAM_TOKEN and HF_TOKEN are set.")
+    """Start the bot with error-resilient long polling loops."""
+    if not TOKEN:
+        logger.error("Missing TELEGRAM_TOKEN environment variable!")
         return
 
     try:
@@ -102,7 +95,7 @@ def main():
             application.run_polling(close_loop=False)
             break 
         except Conflict:
-            logger.warning("Token conflict detected. Waiting out old worker deployment instance...")
+            logger.warning("Token conflict detected. Waiting for old Render worker to release the connection...")
             time.sleep(10)
         except Exception as e:
             logger.error(f"Unexpected loop drop: {e}")

@@ -1,3 +1,4 @@
+# Deployment Revision: 2.0 - Clear Core Pipeline
 import os
 import logging
 import urllib3

@@ -5,6 +5,7 @@ import io
 import asyncio
 import html
 import time
+from urllib.parse import quote
 from telegram import Update
 from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
@@ -16,7 +17,7 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 
-# Global PoolManager for handling outbound connections cleanly
+# Global PoolManager for handling connections cleanly
 http = urllib3.PoolManager(retries=urllib3.Retry(connect=3, read=3, redirect=3))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -33,41 +34,41 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
 async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Handles user messages, pulls the image from an ultra-stable mirror route, and sends it back."""
     user_prompt = update.message.text
+    
+    # Send processing message
     processing_msg = await update.message.reply_text("🔄 <i>Designing your logo... Please wait a few seconds.</i>", parse_mode="HTML")
 
     # Clean the input and craft a prompt optimized for logo assets
     safe_prompt = html.escape(user_prompt)
     clean_prompt = f"Professional logo design, {safe_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
     
-    # URL encode the prompt so spaces and special characters don't break the web address
-    encoded_prompt = urllib3.util.parse_url(clean_prompt).url
-    
-    # We use a globally recognized endpoint that avoids Hugging Face's DNS sub-domain blocks
-    # This calls a blazing-fast Stable Diffusion engine completely free without token requirements
+    # FIX: Correctly encode the prompt so spaces and symbols are completely web-safe
+    encoded_prompt = quote(clean_prompt)
     api_url = f"https://image.pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&nologo=true"
 
     try:
         def fetch_image():
-            # Standard GET request to fetch the image binary stream
-            response = http.request("GET", api_url, timeout=45.0)
-            return response
+            return http.request("GET", api_url, timeout=30.0)
 
-        # Run the image download in a background thread
+        # Run the image download in a background thread to prevent blocking
         res = await asyncio.to_thread(fetch_image)
         
         if res.status == 200:
             image_file = io.BytesIO(res.data)
             image_file.name = 'logo.png'
+            
+            # Send photo back
             await update.message.reply_photo(photo=image_file, caption="✨ Here is your generated logo! ✨")
         else:
             logger.error(f"Image generation failed with status code: {res.status}")
-            await update.message.reply_text("⚠️ The generation pipeline is busy. Please try sending your prompt again!")
+            await update.message.reply_text("⚠️ The image server is busy right now. Please try sending your text again!")
 
     except Exception as e:
         logger.error(f"Network error caught: {str(e)}")
         await update.message.reply_text("❌ Connection timeout. Let's try that prompt one more time.")
     
     finally:
+        # Gracefully clear the loading text placeholder
         try:
             await context.bot.delete_message(chat_id=update.effective_chat.id, message_id=processing_msg.message_id)
         except Exception:

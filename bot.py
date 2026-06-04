@@ -1,7 +1,7 @@
-# Deployment Revision: 2.0 - Clear Core Pipeline
+# Deployment Revision: 3.0 - Native Network Stream Layout
 import os
 import logging
-import urllib3
+import urllib.request
 import io
 import asyncio
 import html
@@ -16,9 +16,6 @@ logger = logging.getLogger(__name__)
 # Load environment variables
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL")
-
-# Global PoolManager for handling connections cleanly
-http = urllib3.PoolManager(retries=urllib3.Retry(connect=3, read=3, redirect=3))
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the command /start is issued."""
@@ -42,30 +39,36 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     safe_prompt = html.escape(user_prompt)
     clean_prompt = f"Professional logo design, {safe_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
     
-    # Safe encoding for spaces and symbols to prevent 402 Errors
-    encoded_prompt = quote(clean_prompt)
+    # Fully isolate the string conversion to strip hidden characters
+    encoded_prompt = quote(clean_prompt.strip())
     api_url = f"https://image.pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&nologo=true"
 
     try:
         def fetch_image():
-            return http.request("GET", api_url, timeout=30.0)
+            # Force explicit header layout to mimic a clean standard web client
+            req = urllib.request.Request(
+                api_url, 
+                headers={'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)'}
+            )
+            with urllib.request.urlopen(req, timeout=30.0) as response:
+                return response.read(), response.getcode()
 
-        # Run the image download in a background thread to prevent blocking
-        res = await asyncio.to_thread(fetch_image)
+        # Run the image download inside an isolated thread worker
+        raw_data, status_code = await asyncio.to_thread(fetch_image)
         
-        if res.status == 200:
-            image_file = io.BytesIO(res.data)
+        if status_code == 200:
+            image_file = io.BytesIO(raw_data)
             image_file.name = 'logo.png'
             
-            # Send photo back safely
+            # Deliver the raw binary photo asset back to the telegram client channel
             await update.message.reply_photo(photo=image_file, caption="✨ Here is your generated logo! ✨")
         else:
-            logger.error(f"Image generation failed with status code: {res.status}")
-            await update.message.reply_text("⚠️ The image server is busy right now. Please try sending your text again!")
+            logger.error(f"Image generation failed with status code: {status_code}")
+            await update.message.reply_text("⚠️ The image server returned an error format. Please try varying your text words!")
 
     except Exception as e:
-        logger.error(f"Network error caught: {str(e)}")
-        await update.message.reply_text("❌ Connection timeout. Let's try that prompt one more time.")
+        logger.error(f"Network error caught during generation process: {str(e)}")
+        await update.message.reply_text("❌ Connection timeout or invalid response pattern. Let's try that prompt one more time.")
     
     finally:
         # Gracefully clear the loading text placeholder
@@ -80,7 +83,7 @@ def main():
         logger.error("Missing TELEGRAM_TOKEN environment variable!")
         return
 
-    # Initialize loop safely for newer Python versions
+    # Initialize loop safely for newer Python runtimes
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -95,7 +98,6 @@ def main():
     port = int(os.environ.get("PORT", 8443))
 
     if RENDER_EXTERNAL_URL:
-        # Clean up any accidental trailing slash from the user input variable
         base_url = RENDER_EXTERNAL_URL.rstrip("/")
         logger.info(f"Starting webhook listener on port {port} targeting base URL: {base_url}")
         

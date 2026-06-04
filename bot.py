@@ -79,7 +79,7 @@ def main():
         logger.error("Missing TELEGRAM_TOKEN environment variable!")
         return
 
-    # Fix for RuntimeError: There is no current event loop in thread 'MainThread'
+    # Initialize loop safely for newer Python versions
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -90,17 +90,19 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_logo))
 
-    # Port is required by Render web services
+    # Port assignment required by Render's routing mesh
     port = int(os.environ.get("PORT", 8443))
 
     if RENDER_EXTERNAL_URL:
-        logger.info(f"Starting webhook on port {port} via URL: {RENDER_EXTERNAL_URL}")
+        # Clean up any accidental trailing slash from the user input variable
+        base_url = RENDER_EXTERNAL_URL.rstrip("/")
+        logger.info(f"Starting webhook listener on port {port} targeting base URL: {base_url}")
+        
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
-            # FIX: Only allow alphanumeric characters and underscores (removed the '!')
-            secret_token="ASecureSecretToken123", 
-            webhook_url=f"{RENDER_EXTERNAL_URL}/webhook"
+            url_path="",  # Direct root endpoint mapping
+            webhook_url=base_url
         )
     else:
         logger.info("No Render environment found. Falling back to local polling...")

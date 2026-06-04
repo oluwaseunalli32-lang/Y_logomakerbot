@@ -1,1 +1,6 @@
-render.yaml
+services:
+  - type: worker
+    name: y-logomakerbot
+    runtime: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py

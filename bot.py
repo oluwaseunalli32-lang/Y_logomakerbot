@@ -5,6 +5,7 @@ import io
 import asyncio
 import html
 import time
+import json
 from urllib.parse import quote
 from telegram import Update
 from telegram.error import Conflict
@@ -19,6 +20,22 @@ TOKEN = os.getenv("TELEGRAM_TOKEN")
 
 # Global PoolManager for handling connections cleanly
 http = urllib3.PoolManager(retries=urllib3.Retry(connect=3, read=3, redirect=3))
+
+def clear_telegram_conflicts(token):
+    """Forcefully evicts any existing ghost instances on Telegram's servers."""
+    base_url = f"https://api.telegram.org/bot{token}"
+    logger.info("Evicting competing ghost workers from Telegram servers...")
+    try:
+        # 1. Clear any stuck webhooks
+        http.request("POST", f"{base_url}/deleteWebhook", fields={"drop_pending_updates": "true"}, timeout=10.0)
+        
+        # 2. Pull with a flush offset to kick out competing getUpdates long-pollers
+        http.request("POST", f"{base_url}/getUpdates", fields={"offset": "-1", "limit": "1", "timeout": "0"}, timeout=10.0)
+        
+        logger.info("Ghost workers evicted successfully. Proceeding to safe initialization.")
+        time.sleep(2) # Give Telegram's router a moment to catch its breath
+    except Exception as e:
+        logger.warning(f"Pre-flight conflict clearing warning: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the command /start is issued."""
@@ -80,6 +97,9 @@ def main():
         logger.error("Missing TELEGRAM_TOKEN environment variable!")
         return
 
+    # Clear conflicting connections before constructing application
+    clear_telegram_conflicts(TOKEN)
+
     try:
         asyncio.get_running_loop()
     except RuntimeError:
@@ -96,8 +116,9 @@ def main():
             application.run_polling(close_loop=False)
             break 
         except Conflict:
-            logger.warning("Token conflict detected. Waiting for old Render worker to release the connection...")
-            time.sleep(10)
+            logger.warning("Token conflict dropped. Re-evicting and retrying in 5 seconds...")
+            clear_telegram_conflicts(TOKEN)
+            time.sleep(5)
         except Exception as e:
             logger.error(f"Unexpected loop drop: {e}")
             time.sleep(5)

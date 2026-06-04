@@ -98,7 +98,8 @@ def main():
         application.run_webhook(
             listen="0.0.0.0",
             port=port,
-            secret_token="A_Secure_Secret_Token_123!", 
+            # FIX: Only allow alphanumeric characters and underscores (removed the '!')
+            secret_token="ASecureSecretToken123", 
             webhook_url=f"{RENDER_EXTERNAL_URL}/webhook"
         )
     else:

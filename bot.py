@@ -42,7 +42,7 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     safe_prompt = html.escape(user_prompt)
     clean_prompt = f"Professional logo design, {safe_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
     
-    # FIX: Correctly encode the prompt so spaces and symbols are completely web-safe
+    # Safe encoding for spaces and symbols to prevent 402 Errors
     encoded_prompt = quote(clean_prompt)
     api_url = f"https://image.pollinations.ai/p/{encoded_prompt}?width=1024&height=1024&nologo=true"
 

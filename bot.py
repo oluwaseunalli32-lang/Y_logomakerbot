@@ -4,10 +4,8 @@ import urllib3
 import io
 import asyncio
 import html
-import time
 from urllib.parse import quote
 from telegram import Update
-from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
 
 # Enable logging
@@ -16,25 +14,10 @@ logger = logging.getLogger(__name__)
 
 # Load environment variables
 TOKEN = os.getenv("TELEGRAM_TOKEN")
+RENDER_EXTERNAL_URL = os.getenv("RENDER_EXTERNAL_URL") # Provided automatically by Render
 
 # Global PoolManager for handling connections cleanly
 http = urllib3.PoolManager(retries=urllib3.Retry(connect=3, read=3, redirect=3))
-
-def clear_telegram_conflicts(token):
-    """Forcefully evicts any existing ghost instances on Telegram's servers."""
-    base_url = f"https://api.telegram.org/bot{token}"
-    logger.info("Evicting competing ghost workers from Telegram servers...")
-    try:
-        # 1. Clear any stuck webhooks
-        http.request("POST", f"{base_url}/deleteWebhook", fields={"drop_pending_updates": "true"}, timeout=10.0)
-        
-        # 2. Pull with a flush offset to kick out competing getUpdates long-pollers
-        http.request("POST", f"{base_url}/getUpdates", fields={"offset": "-1", "limit": "1", "timeout": "0"}, timeout=10.0)
-        
-        logger.info("Ghost workers evicted successfully. Proceeding to safe initialization.")
-        time.sleep(2) # Give Telegram's router a moment to catch its breath
-    except Exception as e:
-        logger.warning(f"Pre-flight conflict clearing warning: {e}")
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the command /start is issued."""
@@ -48,7 +31,7 @@ async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     await update.message.reply_text(welcome_text, parse_mode="HTML")
 
 async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
-    """Handles user messages, pulls the image from an ultra-stable mirror route, and sends it back."""
+    """Handles user messages, pulls the image from Pollinations AI, and sends it back."""
     user_prompt = update.message.text
     
     # Send processing message
@@ -73,7 +56,7 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             image_file = io.BytesIO(res.data)
             image_file.name = 'logo.png'
             
-            # Send photo back safely with fully closed syntax parameters
+            # Send photo back safely
             await update.message.reply_photo(photo=image_file, caption="✨ Here is your generated logo! ✨")
         else:
             logger.error(f"Image generation failed with status code: {res.status}")
@@ -91,36 +74,30 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             pass
 
 def main():
-    """Start the bot with error-resilient long polling loops."""
+    """Start the bot using Webhooks to completely eliminate duplicate/conflict instances."""
     if not TOKEN:
         logger.error("Missing TELEGRAM_TOKEN environment variable!")
         return
-
-    # Clear conflicting connections before constructing application
-    clear_telegram_conflicts(TOKEN)
-
-    try:
-        asyncio.get_running_loop()
-    except RuntimeError:
-        loop = asyncio.new_event_loop()
-        asyncio.set_event_loop(loop)
 
     application = Application.builder().token(TOKEN).build()
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_logo))
 
-    logger.info("Bot is starting up...")
-    while True:
-        try:
-            application.run_polling(close_loop=False)
-            break 
-        except Conflict:
-            logger.warning("Token conflict dropped. Re-evicting and retrying in 5 seconds...")
-            clear_telegram_conflicts(TOKEN)
-            time.sleep(5)
-        except Exception as e:
-            logger.error(f"Unexpected loop drop: {e}")
-            time.sleep(5)
+    # Port is required by Render web services
+    port = int(os.environ.get("PORT", 8443))
+
+    if RENDER_EXTERNAL_URL:
+        logger.info(f"Starting webhook on port {port} via URL: {RENDER_EXTERNAL_URL}")
+        application.run_webhook(
+            listen="0.0.0.0",
+            port=port,
+            secret_token="A_Secure_Secret_Token_123!", # Secures your endpoint
+            webhook_url=f"{RENDER_EXTERNAL_URL}/webhook"
+        )
+    else:
+        # Fallback local testing if not running on Render infrastructure
+        logger.info("No Render environment found. Falling back to local polling...")
+        application.run_polling()
 
 if __name__ == '__main__':
     main()

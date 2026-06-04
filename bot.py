@@ -1,6 +1,5 @@
 import os
 import logging
-import requests
 import io
 import asyncio
 import html
@@ -8,6 +7,7 @@ import time
 from telegram import Update
 from telegram.error import Conflict
 from telegram.ext import Application, CommandHandler, MessageHandler, filters, ContextTypes
+from huggingface_hub import InferenceClient
 
 # Enable logging
 logging.basicConfig(format='%(asctime)s - %(name)s - %(levelname)s - %(message)s', level=logging.INFO)
@@ -17,9 +17,12 @@ logger = logging.getLogger(__name__)
 TOKEN = os.getenv("TELEGRAM_TOKEN")
 HF_TOKEN = os.getenv("HF_TOKEN")
 
-# Text-to-image AI model
-API_URL = "https://api-inference.huggingface.co/models/stabilityai/stable-diffusion-xl-base-1.0"
-HEADERS = {"Authorization": f"Bearer {HF_TOKEN}"}
+# Initialize the official Hugging Face Inference Client
+# This handles connection pooling and network drops much better than raw requests
+client = InferenceClient(
+    model="stabilityai/stable-diffusion-xl-base-1.0",
+    token=HF_TOKEN
+)
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     """Sends a welcome message when the command /start is issued."""
@@ -41,20 +44,23 @@ async def generate_logo(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     enhanced_prompt = f"Professional logo design, {safe_prompt}, clean vector graphic, minimalist, modern branding, isolated background, high resolution, 8k"
 
     try:
-        response = requests.post(API_URL, headers=HEADERS, json={"inputs": enhanced_prompt})
-        
-        if response.status_code == 200:
-            image_bytes = response.content
-            image_file = io.BytesIO(image_bytes)
-            image_file.name = 'logo.png'
+        # Run the network-bound image generation in a background thread to prevent blocking the async loop
+        def call_hf():
+            return client.text_to_image(enhanced_prompt)
 
-            await update.message.reply_photo(photo=image_file, caption="✨ Here is your generated logo! ✨")
-        else:
-            logger.error(f"HF API Error: {response.status_code} - {response.text}")
-            await update.message.reply_text("⚠️ Sorry, the AI server is busy right now. Please try again in a moment!")
+        # Execute the generation safely
+        image = await asyncio.to_thread(call_hf)
+        
+        # Convert PIL Image directly to bytes for Telegram upload
+        image_file = io.BytesIO()
+        image.save(image_file, format='PNG')
+        image_file.seek(0)
+        image_file.name = 'logo.png'
+
+        await update.message.reply_photo(photo=image_file, caption="✨ Here is your generated logo! ✨")
 
     except Exception as e:
-        logger.error(f"Error occurred: {str(e)}")
+        logger.error(f"Error occurred during generation: {str(e)}")
         await update.message.reply_text("❌ An error occurred while generating your logo. Please try again.")
     
     finally:
@@ -84,9 +90,6 @@ def main():
     application.add_handler(CommandHandler("start", start))
     application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, generate_logo))
 
-    # COLLISION PROOF POLLING LOOP:
-    # If Render runs two copies of your bot during deployment, the new one will gracefully 
-    # wait for the old one to die instead of hard-crashing and staying broken.
     logger.info("Bot is starting up...")
     while True:
         try:
